@@ -1,0 +1,10 @@
+services:
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: shutter-interlock-workbench:latest
+    container_name: shutter-interlock-web
+    ports:
+      - "8080:80"
+    restart: unless-stopped
