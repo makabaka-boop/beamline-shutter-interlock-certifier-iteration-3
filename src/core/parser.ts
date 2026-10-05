@@ -1,4 +1,10 @@
-import type { ImportResult, Literal, Rule, ShutterState, Workspace } from './types';
+import type {
+  ImportResult,
+  Literal,
+  Rule,
+  ShutterState,
+  Workspace,
+} from './types';
 
 export const MAX_SHUTTERS = 300;
 export const MIN_SHUTTERS = 2;
@@ -6,6 +12,123 @@ export const MAX_RULES = 3000;
 
 const STATES: ShutterState[] = ['OPEN', 'CLOSED'];
 const SECTION_RE = /^\[([a-zA-Z]+)\]$/;
+
+export interface ParsedRuleLine {
+  errors: string[];
+  rule: { a: Literal; b: Literal; text: string } | null;
+}
+
+/**
+ * 解析单行规则文本（与整份导入中的 [rules] 行共用同一套记号位置语义）。
+ * 导入解析与「候选规则预检」均经由本函数，保证候选行与既有规则接受完全相同的
+ * 合法性标准（未知 ID、非法状态、同规则内重复快门、记号数错误、OR 位置错误）。
+ *
+ * 按记号位置切分：首两个记号 = 第一文字，末两个记号 = 第二文字，中间记号
+ * （若有）须全部为连接词 OR（大小写不敏感）。如此「OR」自身也能作为快门 ID
+ * 被引用，如「S1 OPEN OR CLOSED」、「OR OPEN OR S1 CLOSED」。
+ *
+ * 错误信息统一带「第 {lineNo} 行：」前缀，与整份导入的报错形式一致；
+ * 候选规则只有一行，调用方传 lineNo=1 即得到「第 1 行：…」。
+ */
+export function parseRuleLine(
+  line: string,
+  lineNo: number,
+  knownIds: ReadonlyMap<string, unknown>,
+): ParsedRuleLine {
+  const errors: string[] = [];
+  const pushError = (msg: string) => errors.push(`第 ${lineNo} 行：${msg}`);
+
+  const tokens = line.split(/\s+/);
+  let wellFormed = tokens.length >= 4;
+  for (let j = 2; j < tokens.length - 2; j++) {
+    if (tokens[j].toUpperCase() !== 'OR') {
+      wellFormed = false;
+      break;
+    }
+  }
+  if (!wellFormed) {
+    pushError(
+      `规则必须恰好包含两个「快门ID 状态」文字，连接词 OR 只能出现在两个文字之间（得到 ${tokens.length} 个记号）`,
+    );
+    return { errors, rule: null };
+  }
+
+  const parseLiteral = (
+    idTok: string,
+    stateTok: string,
+    seenIdsOnLine: Set<string>,
+  ): Literal | null => {
+    let bad = false;
+    if (!knownIds.has(idTok)) {
+      pushError(`未知快门 ID「${idTok}」，需先在 [shutters] 中声明`);
+      bad = true;
+    }
+    if (!(STATES as string[]).includes(stateTok)) {
+      pushError(
+        `非法状态「${stateTok}」（快门 ${idTok}），只允许 OPEN 或 CLOSED`,
+      );
+      bad = true;
+    }
+    if (seenIdsOnLine.has(idTok)) {
+      pushError(`同一条规则中快门「${idTok}」重复出现`);
+      bad = true;
+    }
+    seenIdsOnLine.add(idTok);
+    if (bad) return null;
+    return { id: idTok, state: stateTok as ShutterState };
+  };
+
+  const onLine = new Set<string>();
+  const a = parseLiteral(tokens[0], tokens[1], onLine);
+  const b = parseLiteral(
+    tokens[tokens.length - 2],
+    tokens[tokens.length - 1],
+    onLine,
+  );
+  if (errors.length > 0 || !a || !b) {
+    return { errors, rule: null };
+  }
+  return { errors: [], rule: { a, b, text: line } };
+}
+
+export interface CandidateParseResult {
+  ok: boolean;
+  errors: string[];
+  /** 候选规则（index 尚未分配；加入工作区时序号为现有规则数）；失败为 null */
+  rule: { a: Literal; b: Literal; text: string } | null;
+}
+
+/**
+ * 解析「新增候选规则」输入：必须恰好是一行非空、非注释、合法的二元规则，
+ * 且加入后规则总数不超过 MAX_RULES。与整份导入共用 parseRuleLine，
+ * 因此「整份导入会拒绝的写法，候选预检也拒绝」。
+ */
+export function parseCandidateRule(
+  input: string,
+  workspace: Workspace,
+): CandidateParseResult {
+  const raw = input.replace(/\r\n|\r/g, '\n');
+  const nonEmpty = raw.split('\n').filter((l) => l.trim() !== '' && !l.trim().startsWith('#'));
+  if (nonEmpty.length === 0) {
+    return { ok: false, errors: ['候选规则为空，请输入一行「快门ID 状态 [OR] 快门ID 状态」'], rule: null };
+  }
+  if (nonEmpty.length > 1) {
+    return { ok: false, errors: ['候选规则必须写在一行内；新增多条请逐条预检'], rule: null };
+  }
+
+  const line = nonEmpty[0].trim();
+  const errors: string[] = [];
+  if (workspace.rules.length >= MAX_RULES) {
+    errors.push(`规则数量已达上限 ${MAX_RULES} 条，无法再新增`);
+  }
+  const knownIds = new Map<string, true>(workspace.ids.map((id) => [id, true]));
+  const parsed = parseRuleLine(line, 1, knownIds);
+  errors.push(...parsed.errors);
+  if (errors.length > 0 || !parsed.rule) {
+    return { ok: false, errors, rule: null };
+  }
+  return { ok: true, errors: [], rule: parsed.rule };
+}
 
 interface RawRule {
   lineNo: number;
@@ -44,37 +167,6 @@ export function parseWorkspace(text: string): ImportResult {
 
   const pushError = (lineNo: number, msg: string) =>
     errors.push(`第 ${lineNo} 行：${msg}`);
-
-  const parseLiteral = (
-    idTok: string | undefined,
-    stateTok: string | undefined,
-    lineNo: number,
-    seenIdsOnLine: Set<string>,
-  ): Literal | null => {
-    if (!idTok || !stateTok) {
-      pushError(lineNo, '规则必须形如「快门ID 状态 [OR] 快门ID 状态」');
-      return null;
-    }
-    let bad = false;
-    if (!seenIds.has(idTok)) {
-      pushError(lineNo, `未知快门 ID「${idTok}」，需先在 [shutters] 中声明`);
-      bad = true;
-    }
-    if (!(STATES as string[]).includes(stateTok)) {
-      pushError(
-        lineNo,
-        `非法状态「${stateTok}」（快门 ${idTok}），只允许 OPEN 或 CLOSED`,
-      );
-      bad = true;
-    }
-    if (seenIdsOnLine.has(idTok)) {
-      pushError(lineNo, `同一条规则中快门「${idTok}」重复出现`);
-      bad = true;
-    }
-    seenIdsOnLine.add(idTok);
-    if (bad) return null;
-    return { id: idTok, state: stateTok as ShutterState };
-  };
 
   for (let i = 0; i < lines.length; i++) {
     const lineNo = i + 1;
@@ -121,36 +213,13 @@ export function parseWorkspace(text: string): ImportResult {
       continue;
     }
 
-    // rules
-    // 按位置切分：首两个记号 = 第一文字，末两个记号 = 第二文字，中间记号
-    // （若有）须全部为连接词 OR（大小写不敏感；兼容旧版对重复 OR 的宽容）。
-    // 如此「OR」自身也能作为快门 ID 被引用，如「S1 OPEN OR CLOSED」、
-    // 「OR OPEN OR S1 CLOSED」。
-    const tokens = line.split(/\s+/);
-    let wellFormed = tokens.length >= 4;
-    for (let j = 2; j < tokens.length - 2; j++) {
-      if (tokens[j].toUpperCase() !== 'OR') {
-        wellFormed = false;
-        break;
-      }
-    }
-    if (!wellFormed) {
-      pushError(
-        lineNo,
-        `规则必须恰好包含两个「快门ID 状态」文字，连接词 OR 只能出现在两个文字之间（得到 ${tokens.length} 个记号）`,
-      );
-      continue;
-    }
-    const onLine = new Set<string>();
-    const a = parseLiteral(tokens[0], tokens[1], lineNo, onLine);
-    const b = parseLiteral(
-      tokens[tokens.length - 2],
-      tokens[tokens.length - 1],
-      lineNo,
-      onLine,
-    );
-    if (a && b) {
-      rawRules.push({ lineNo, a, b, text: line });
+    // rules：与候选规则预检共用 parseRuleLine，保证两处的记号位置语义、
+    // 未知 ID / 非法状态 / 同规则重复判定完全一致。
+    const parsedLine = parseRuleLine(line, lineNo, seenIds);
+    if (parsedLine.rule) {
+      rawRules.push({ lineNo, ...parsedLine.rule });
+    } else {
+      errors.push(...parsedLine.errors);
     }
   }
 

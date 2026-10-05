@@ -393,3 +393,24 @@ th {
   text-align: center;
   margin-top: 24px;
 }
+
+.candidate-result {
+  margin-top: 12px;
+  border-top: 1px solid var(--border);
+  padding-top: 10px;
+}
+
+.candidate-result h3 {
+  margin: 4px 0 8px;
+}
+
+.candidate-result h4 {
+  margin: 12px 0 6px;
+  font-size: 13px;
+  color: var(--accent);
+}
+
+.candidate-result .plan-table {
+  margin-bottom: 6px;
+}
+

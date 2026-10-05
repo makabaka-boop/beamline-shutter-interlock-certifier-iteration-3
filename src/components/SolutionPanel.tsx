@@ -24,7 +24,7 @@ interface Props {
   onConfirmRepair: () => void;
 }
 
-function reasonLabel(reason: EdgeReason, workspace: Workspace): { tag: string; detail: string } {
+export function reasonLabel(reason: EdgeReason, workspace: Workspace): { tag: string; detail: string } {
   if (reason.kind === 'rule') {
     const r = workspace.rules[reason.ruleIndex];
     return {
@@ -38,7 +38,7 @@ function reasonLabel(reason: EdgeReason, workspace: Workspace): { tag: string; d
   return { tag: '试设', detail: `贪心试设 ${reason.state}` };
 }
 
-function PathView({
+export function PathView({
   title,
   steps,
   workspace,
@@ -80,7 +80,7 @@ function PathView({
 }
 
 /** 完整方案表：方案状态、当前状态与改动，按 UTF-8 字节序逐行列出。 */
-function PlanTable({
+export function PlanTable({
   orderedIds,
   assignment,
   changes,

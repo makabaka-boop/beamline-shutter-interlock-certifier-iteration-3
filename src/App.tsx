@@ -1,8 +1,13 @@
 import { useMemo, useState } from 'react';
 import type { LockRepair, ShutterState, SolveOutcome, Workspace } from './core/types';
-import { parseWorkspace } from './core/parser';
+import { parseCandidateRule, parseWorkspace } from './core/parser';
 import { suggestLockRepair } from './core/repair';
 import { computeChanges, solveWorkspace } from './core/sat';
+import {
+  precheckCandidate,
+  withCandidateRule,
+  type CandidateRule,
+} from './core/candidate';
 import { sortByUtf8 } from './core/utf8';
 import { downloadText, serializeTable } from './lib/export';
 import { SAMPLE_WORKSPACE } from './lib/sample';
@@ -11,6 +16,7 @@ import { ImportPanel } from './components/ImportPanel';
 import { ShutterTable } from './components/ShutterTable';
 import { RulesPanel } from './components/RulesPanel';
 import { SolutionPanel } from './components/SolutionPanel';
+import { CandidatePanel, type CandidateCheckSnapshot } from './components/CandidatePanel';
 
 interface Preview {
   outcome: SolveOutcome;
@@ -24,10 +30,13 @@ export default function App() {
   const [workspace, setWorkspace] = useState<Workspace | null>(null);
   const [table, setTable] = useState<Record<string, ShutterState>>({});
   const [locks, setLocks] = useState<Record<string, ShutterState>>({});
-  /** 规则或锁定每次变化自增：使旧预览立即失效 */
+  /** 规则或锁定每次变化自增：使旧预览 / 候选预检立即失效 */
   const [specRev, setSpecRev] = useState(0);
   const [preview, setPreview] = useState<Preview | null>(null);
   const [adopted, setAdopted] = useState(false);
+  const [candidateText, setCandidateText] = useState('');
+  const [candidateCheck, setCandidateCheck] = useState<CandidateCheckSnapshot | null>(null);
+  const [candidateErrors, setCandidateErrors] = useState<string[]>([]);
 
   const orderedIds = useMemo(
     () => (workspace ? sortByUtf8(workspace.ids, (id) => id) : []),
@@ -35,6 +44,14 @@ export default function App() {
   );
 
   const previewStale = preview !== null && preview.specRev !== specRev;
+  /**
+   * 候选预检仅在以下条件同时成立时有效：规则/锁定版本未变（specRev），
+   * 且候选草稿未被再次编辑（text）。任何导入、规则确认、锁定编辑或草稿修改
+   * 都会立即使旧预检过期，过期预检不可确认。
+   */
+  const candidateStale =
+    candidateCheck !== null &&
+    (candidateCheck.specRev !== specRev || candidateCheck.text !== candidateText);
 
   const handleImport = (text: string): string[] => {
     const result = parseWorkspace(text);
@@ -47,6 +64,9 @@ export default function App() {
     setLocks({});
     setPreview(null);
     setAdopted(false);
+    setCandidateCheck(null);
+    setCandidateErrors([]);
+    setCandidateText('');
     setSpecRev((r) => r + 1);
     return [];
   };
@@ -114,6 +134,55 @@ export default function App() {
     downloadText('shutter-table.txt', serializeTable(workspace, table));
   };
 
+  /**
+   * 候选规则预检：复用导入解析（parseCandidateRule 与导入共用 parseRuleLine）
+   * 与 2-SAT 语义，在原工作区的临时视图上裁决。全程不改规则、锁定、快门表、
+   * 认证结论与导出。
+   */
+  const handleCandidatePrecheck = () => {
+    if (!workspace) return;
+    const parsed = parseCandidateRule(candidateText, workspace);
+    if (!parsed.ok || !parsed.rule) {
+      setCandidateErrors(parsed.errors);
+      setCandidateCheck(null);
+      return;
+    }
+    const candidate: CandidateRule = parsed.rule;
+    const result = precheckCandidate(workspace, locks, candidate);
+    setCandidateErrors([]);
+    setCandidateCheck({
+      candidate,
+      result,
+      specRev,
+      text: candidateText,
+    });
+  };
+
+  const handleCandidateTextChange = (next: string) => {
+    setCandidateText(next);
+    // 草稿一旦改动，旧预检立即过期（candidateStale 经 text 比对生效）
+  };
+
+  /**
+   * 确认新增候选：只允许基于尚未变化的工作区——预检过期（导入、锁定编辑、
+   * 规则变化或草稿被改）时立即拒绝。确认把候选追加为末条规则，规则序号与
+   * 预检时的临时视图一致；认证结论不自动重算（沿用既有「规则变化须重新认证」
+   * 语义），采纳/导出状态清除。
+   */
+  const handleConfirmCandidate = () => {
+    if (!workspace || !candidateCheck || candidateStale) return;
+    const { result, candidate } = candidateCheck;
+    if (result.kind !== 'tightening' && result.kind !== 'redundant') return;
+    const { workspace: augmented } = withCandidateRule(workspace, candidate);
+    setWorkspace(augmented);
+    setCandidateCheck(null);
+    setCandidateErrors([]);
+    setCandidateText('');
+    setPreview(null);
+    setAdopted(false);
+    setSpecRev((r) => r + 1);
+  };
+
   const changes =
     preview && !previewStale && preview.outcome.kind === 'sat'
       ? computeChanges(preview.outcome.orderedIds, preview.outcome.assignment, table)
@@ -169,6 +238,27 @@ export default function App() {
             </h2>
             <RulesPanel workspace={workspace} />
           </section>
+
+          <CandidatePanel
+            workspace={workspace}
+            locks={locks}
+            text={candidateText}
+            onTextChange={handleCandidateTextChange}
+            check={candidateCheck}
+            stale={candidateStale}
+            onPrecheck={handleCandidatePrecheck}
+            onConfirm={handleConfirmCandidate}
+          />
+          {candidateErrors.length > 0 && (
+            <div className="error-box" data-testid="candidate-errors">
+              <strong>候选规则被拒绝，工作区未改动：</strong>
+              <ul>
+                {candidateErrors.map((e, i) => (
+                  <li key={i}>{e}</li>
+                ))}
+              </ul>
+            </div>
+          )}
 
           <section className="panel panel-wide" data-testid="certify-panel">
             <h2>认证</h2>
