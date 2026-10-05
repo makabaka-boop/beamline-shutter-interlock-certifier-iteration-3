@@ -74,6 +74,33 @@ export type SolveOutcome =
       witness: ConflictWitness;
     };
 
+/** 已解析、尚未并入工作区的候选二元规则 */
+export interface CandidateRule {
+  a: Literal;
+  b: Literal;
+  text: string;
+}
+
+/**
+ * 候选规则预检结论（在不修改工作区的前提下裁决）：
+ * - base-conflict：当前规则与锁定本就无解；见证完全来自现有规则与锁定，
+ *   与候选无关（不能把旧冲突归咎于新规则）；
+ * - candidate-conflict：当前配置可行，但加入候选后无解；见证可指回候选规则；
+ * - redundant：当前所有可行方案本就满足候选，新增不排除任何快门组合；
+ * - tightens：候选有效收紧——plan 为加入候选后、遵守原锁定的字典序最小
+ *   完整方案；counterexample 为当前合法但违反候选的字典序最小可复核见证，
+ *   同样遵守原锁定。
+ */
+export type CandidatePrecheck =
+  | { kind: 'base-conflict'; witness: ConflictWitness }
+  | { kind: 'candidate-conflict'; witness: ConflictWitness }
+  | { kind: 'redundant' }
+  | {
+      kind: 'tightens';
+      plan: Extract<SolveOutcome, { kind: 'sat' }>;
+      counterexample: Extract<SolveOutcome, { kind: 'sat' }>;
+    };
+
 /**
  * 锁定修复建议（仅在认证无解时计算）。
  * 规则与快门表一律不变，唯一允许的修复手段是「撤销若干临时锁定」——

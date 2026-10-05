@@ -387,6 +387,63 @@ th {
   margin-top: 10px;
 }
 
+.candidate-panel {
+  border-top: 1px solid var(--border);
+  margin-top: 12px;
+  padding-top: 10px;
+}
+
+.candidate-panel h3 {
+  font-size: 14px;
+  margin: 2px 0 6px;
+}
+
+.candidate-input-row {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  margin: 8px 0;
+}
+
+.candidate-input-row input {
+  flex: 1;
+  background: #0c111c;
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 7px 10px;
+  font-family: 'JetBrains Mono', Consolas, monospace;
+  font-size: 13px;
+}
+
+.precheck-result h4 {
+  margin: 10px 0 6px;
+  font-size: 14px;
+}
+
+.precheck-result h5 {
+  margin: 12px 0 6px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.precheck-base-conflict h4,
+.precheck-candidate-conflict h4 {
+  color: var(--err);
+}
+
+.precheck-tightens h4 {
+  color: var(--ok);
+}
+
+.precheck-redundant h4 {
+  color: var(--accent);
+}
+
+.precheck-actions {
+  margin-top: 12px;
+}
+
 .app-footer {
   color: var(--muted);
   font-size: 12px;

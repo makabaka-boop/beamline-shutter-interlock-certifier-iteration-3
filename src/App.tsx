@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react';
-import type { LockRepair, ShutterState, SolveOutcome, Workspace } from './core/types';
+import type { LockRepair, Rule, ShutterState, SolveOutcome, Workspace } from './core/types';
 import { parseWorkspace } from './core/parser';
+import { precheckCandidateRule, validateCandidateRule } from './core/precheck';
 import { suggestLockRepair } from './core/repair';
 import { computeChanges, solveWorkspace } from './core/sat';
 import { sortByUtf8 } from './core/utf8';
@@ -11,6 +12,7 @@ import { ImportPanel } from './components/ImportPanel';
 import { ShutterTable } from './components/ShutterTable';
 import { RulesPanel } from './components/RulesPanel';
 import { SolutionPanel } from './components/SolutionPanel';
+import { CandidatePanel, type PrecheckRecord } from './components/CandidatePanel';
 
 interface Preview {
   outcome: SolveOutcome;
@@ -28,6 +30,8 @@ export default function App() {
   const [specRev, setSpecRev] = useState(0);
   const [preview, setPreview] = useState<Preview | null>(null);
   const [adopted, setAdopted] = useState(false);
+  /** 候选规则预检记录；与 preview 一样随 specRev 过期，过期后不能确认新增 */
+  const [precheck, setPrecheck] = useState<PrecheckRecord | null>(null);
 
   const orderedIds = useMemo(
     () => (workspace ? sortByUtf8(workspace.ids, (id) => id) : []),
@@ -46,6 +50,7 @@ export default function App() {
     setTable(initialTable(result.workspace.ids));
     setLocks({});
     setPreview(null);
+    setPrecheck(null);
     setAdopted(false);
     setSpecRev((r) => r + 1);
     return [];
@@ -109,6 +114,47 @@ export default function App() {
     setAdopted(true);
   };
 
+  /**
+   * 候选规则预检：只读操作——不改动规则、锁定、认证结论或导出状态，
+   * 仅把结论与当前 specRev 一起记入预检记录。
+   */
+  const handlePrecheck = (text: string): string[] => {
+    if (!workspace) return ['请先导入工作区'];
+    const validation = validateCandidateRule(text, workspace);
+    if (!validation.ok || !validation.candidate) {
+      setPrecheck(null);
+      return validation.errors;
+    }
+    const result = precheckCandidateRule(workspace, locks, validation.candidate);
+    setPrecheck({ candidate: validation.candidate, result, specRev });
+    return [];
+  };
+
+  /**
+   * 确认新增：只在预检未过期（规则与锁定期间未变化）且结论为「有效收紧」
+   * 或「冗余」时执行，把候选作为最后一条规则并入；锁定、快门表一律不动，
+   * 旧认证结论随 specRev 自增立即失效，须重新认证。
+   */
+  const handleConfirmAddRule = () => {
+    if (!workspace || !precheck || precheck.specRev !== specRev) return;
+    if (
+      precheck.result.kind !== 'tightens' &&
+      precheck.result.kind !== 'redundant'
+    ) {
+      return;
+    }
+    const newRule: Rule = {
+      index: workspace.rules.length,
+      a: precheck.candidate.a,
+      b: precheck.candidate.b,
+      text: precheck.candidate.text,
+    };
+    setWorkspace({ ids: workspace.ids, rules: [...workspace.rules, newRule] });
+    setPrecheck(null);
+    setAdopted(false);
+    setSpecRev((r) => r + 1);
+  };
+
   const handleDownload = () => {
     if (!workspace || !adopted || previewStale) return;
     downloadText('shutter-table.txt', serializeTable(workspace, table));
@@ -168,6 +214,15 @@ export default function App() {
               <span className="rule-semantics">每条规则：两个文字至少一个成立</span>
             </h2>
             <RulesPanel workspace={workspace} />
+            <CandidatePanel
+              workspace={workspace}
+              locks={locks}
+              table={table}
+              specRev={specRev}
+              precheck={precheck}
+              onPrecheck={handlePrecheck}
+              onConfirmAdd={handleConfirmAddRule}
+            />
           </section>
 
           <section className="panel panel-wide" data-testid="certify-panel">
